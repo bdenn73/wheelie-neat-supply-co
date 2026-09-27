@@ -74,11 +74,14 @@ test('free-tier Worker keeps catalog and owner sessions in D1', async () => {
     const scout = await (await request('/api/admin/scout', 'GET', null, cookie)).json();
     assert.equal(scout.candidates[0].name, 'Storage organizer');
     assert.equal((await request('/api/admin/scout')).status, 401);
-    env.PAYPAL_MODE = 'sandbox'; env.PAYPAL_CLIENT_ID = 'test-client'; env.PAYPAL_CLIENT_SECRET = 'test-secret';
+    env.PAYPAL_MODE = 'sandbox'; env.PAYPAL_CLIENT_ID = ' test-client \n'; env.PAYPAL_CLIENT_SECRET = ' test-secret\n';
     await request('/api/admin/products/' + item.id, 'PUT', { name: item.name, price: '12.50', available: false, stockQty: 2 }, cookie);
     let createdPayPalId;
     global.fetch = async (url, options) => {
-      if (String(url).endsWith('/v1/oauth2/token')) return new Response(JSON.stringify({ access_token: 'test-paypal-token' }), { status: 200 });
+      if (String(url).endsWith('/v1/oauth2/token')) {
+        assert.equal(atob(options.headers.Authorization.split(' ')[1]), 'test-client:test-secret');
+        return new Response(JSON.stringify({ access_token: 'test-paypal-token' }), { status: 200 });
+      }
       if (String(url).endsWith('/v2/checkout/orders')) {
         const payload = JSON.parse(options.body); createdPayPalId = payload.purchase_units[0].custom_id;
         assert.equal(payload.purchase_units[0].amount.value, '12.50');
@@ -102,7 +105,7 @@ test('free-tier Worker keeps catalog and owner sessions in D1', async () => {
     global.fetch = async () => new Response(JSON.stringify({ error: 'invalid_client' }), { status: 401 });
     const badCredentials = await request('/api/checkout/sandbox/create', 'POST', { productId: item.id }, cookie);
     assert.equal(badCredentials.status, 502);
-    assert.match((await badCredentials.json()).error, /sandbox authentication failed/);
+    assert.match((await badCredentials.json()).error, /PayPal token request returned HTTP 401: invalid_client/);
   } finally { global.fetch = originalFetch; }
   assert.equal(sqlite.prepare('SELECT count(*) AS n FROM products').get().n, 1);
   await request('/api/admin/logout', 'POST', null, cookie);
