@@ -14,11 +14,11 @@ async function token(apiKey) {
   return cached.token;
 }
 
-export async function searchCJ(apiKey, keyword) {
+export async function searchCJ(apiKey, keyword, trending = false) {
   const q = typeof keyword === 'string' ? keyword.trim() : '';
   if (q.length < 2 || q.length > 80) throw new Error('Enter a supplier search of 2 to 80 characters.');
   const accessToken = await token(apiKey);
-  const url = `${BASE}/product/listV2?page=1&size=10&keyWord=${encodeURIComponent(q)}&countryCode=US&verifiedWarehouse=1`;
+  const url = `${BASE}/product/listV2?page=1&size=10&keyWord=${encodeURIComponent(q)}&countryCode=US&verifiedWarehouse=1${trending ? '&productFlag=0&startWarehouseInventory=1' : ''}`;
   const response = await fetch(url, { headers: { 'CJ-Access-Token': accessToken }, signal: AbortSignal.timeout(15000) });
   const value = await response.json();
   if (!response.ok || !value.result) throw new Error('CJ product search failed.');

@@ -70,6 +70,10 @@ test('free-tier Worker keeps catalog and owner sessions in D1', async () => {
     const supplier = await (await request('/api/admin/supplier/search?q=storage', 'GET', null, cookie)).json();
     assert.equal(supplier.products[0].name, 'Storage organizer');
     assert.equal('apiKey' in supplier, false);
+    await worker.scheduled({}, env);
+    const scout = await (await request('/api/admin/scout', 'GET', null, cookie)).json();
+    assert.equal(scout.candidates[0].name, 'Storage organizer');
+    assert.equal((await request('/api/admin/scout')).status, 401);
     env.PAYPAL_MODE = 'sandbox'; env.PAYPAL_CLIENT_ID = 'test-client'; env.PAYPAL_CLIENT_SECRET = 'test-secret';
     await request('/api/admin/products/' + item.id, 'PUT', { name: item.name, price: '12.50', available: false, stockQty: 2 }, cookie);
     let createdPayPalId;
