@@ -1,0 +1,19 @@
+name: Checkout connection check
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/checkout-connection.yml
+  workflow_dispatch:
+
+jobs:
+  sandbox-status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check deployed checkout status
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location --max-time 20 \
+            https://wheelie-neat-supply-co.n6n5tmwjgk.workers.dev/api/checkout/status \
+            | node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(0,"utf8")); console.log("sandbox="+x.sandbox+", live="+x.live); if(x.sandbox!==true || x.live!==false) process.exit(1)'
