@@ -1,0 +1,35 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wheelie-test-'));
+process.env.DATA_FILE = path.join(dir, 'products.json');
+process.env.ADMIN_PASSWORD = 'unique-test-password-123';
+const server = require('../backend/server');
+
+test('catalog is empty until owner publishes a product; mutations require login and same origin', async t => {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const call = (url, options = {}) => fetch(origin + url, options);
+  assert.deepEqual(await (await call('/api/products')).json(), []);
+  const forbidden = await call('/api/admin/products', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Private', price: '10.00', available: true }) });
+  assert.equal(forbidden.status, 401);
+  const ariaForbidden = await call('/api/admin/aria', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }) });
+  assert.equal(ariaForbidden.status, 401);
+  const login = await call('/api/admin/login', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ password: process.env.ADMIN_PASSWORD }) });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const csrf = await call('/api/admin/products', { method: 'POST', headers: { Origin: 'https://attacker.example', Cookie: cookie, 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(csrf.status, 403);
+  const created = await call('/api/admin/products', { method: 'POST', headers: { Origin: origin, Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'First item', description: 'Description', price: '12.50', available: false }) });
+  assert.equal(created.status, 201);
+  const item = await created.json();
+  assert.deepEqual(await (await call('/api/products')).json(), []);
+  const updated = await call('/api/admin/products/' + item.id, { method: 'PUT', headers: { Origin: origin, Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'First item', description: 'Description', price: '12.50', available: true }) });
+  assert.equal(updated.status, 200);
+  assert.equal((await (await call('/api/products')).json())[0].priceCents, 1250);
+  assert.equal(JSON.parse(fs.readFileSync(process.env.DATA_FILE)).length, 1);
+  assert.equal((await call('/../backend/server.js')).status, 404);
+});
