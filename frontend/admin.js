@@ -6,6 +6,7 @@ const form = document.getElementById('product-form');
 const cancel = document.getElementById('cancel');
 let editing = null;
 let items = [];
+let lockdown = false;
 async function api(url, options = {}) {
   const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
   const value = await response.json();
@@ -34,9 +35,21 @@ function render() {
   });
 }
 async function refresh() { items = await api('/api/admin/products'); render(); }
+async function refreshSecurity() {
+  const state = await api('/api/admin/security');
+  lockdown = state.lockdown;
+  document.getElementById('security-status').textContent = `${lockdown ? 'Lockdown is ON. Public listings are hidden.' : 'Lockdown is off.'} ${state.failedLogins7d} failed owner sign-in attempt${state.failedLogins7d === 1 ? '' : 's'} in the last 7 days.`;
+  const button = document.getElementById('lockdown');
+  button.textContent = lockdown ? 'Restore public catalog' : 'Turn on lockdown';
+  button.className = lockdown ? 'secondary' : 'danger';
+}
+document.getElementById('lockdown').addEventListener('click', async () => {
+  try { await api('/api/admin/security/lockdown', { method: 'POST', body: JSON.stringify({ lockdown: !lockdown }) }); await refreshSecurity(); message(lockdown ? 'Emergency lockdown is on. Public listings are hidden.' : 'Public catalog restored.'); }
+  catch (error) { message(error.message); }
+});
 document.getElementById('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  try { await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: document.getElementById('password').value }) }); document.getElementById('password').value = ''; showManager(true); await refresh(); message('Signed in.'); }
+  try { await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: document.getElementById('password').value }) }); document.getElementById('password').value = ''; showManager(true); await Promise.all([refresh(), refreshSecurity()]); message('Signed in.'); }
   catch (error) { message(error.message); }
 });
 form.addEventListener('submit', async event => {
@@ -60,4 +73,4 @@ document.getElementById('draft').addEventListener('click', async () => {
   finally { button.disabled = false; }
 });
 document.getElementById('logout').addEventListener('click', async () => { await api('/api/admin/logout', { method: 'POST' }); showManager(false); reset(); message('Signed out.'); });
-api('/api/admin/session').then(async state => { showManager(state.authenticated); if (!state.configured) message('Owner login needs to be configured before products can be managed.'); if (state.authenticated) await refresh(); }).catch(error => message(error.message));
+api('/api/admin/session').then(async state => { showManager(state.authenticated); if (!state.configured) message('Owner login needs to be configured before products can be managed.'); if (state.authenticated) await Promise.all([refresh(), refreshSecurity()]); }).catch(error => message(error.message));
