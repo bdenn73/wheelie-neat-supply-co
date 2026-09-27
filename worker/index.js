@@ -179,9 +179,7 @@ async function api(request, env, path) {
       return json({ approval: result.approval, orderId }, 201);
     } catch (error) {
       console.error('Sandbox checkout create:', error.ownerMessage || error.message);
-      return json({ error: error.message === 'PayPal authentication failed.'
-        ? 'PayPal sandbox authentication failed. Check that the Client ID and Secret in Cloudflare are from the same sandbox app.'
-        : error.ownerMessage || 'PayPal sandbox could not create an order. Try again or check the Worker logs.' }, 502);
+      return json({ error: error.ownerMessage || 'PayPal sandbox could not create an order. Try again or check the Worker logs.' }, 502);
     }
   }
   if (request.method === 'POST' && path === '/api/checkout/sandbox/capture') {
