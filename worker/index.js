@@ -145,7 +145,7 @@ async function api(request, env, path) {
     const input = await body(request);
     if (typeof input?.productId !== 'string' || !/^[a-f0-9-]{36}$/.test(input.productId)) return json({ error: 'Choose a product.' }, 400);
     const product = await db.prepare('SELECT id, name, price_cents, available FROM products WHERE id = ?').bind(input.productId).first();
-    if (!product || !product.available) return json({ error: 'This product is unavailable.' }, 409);
+    if (!product) return json({ error: 'This product is unavailable.' }, 409);
     await detailsTable(db);
     const detail = await db.prepare('SELECT stock_qty FROM product_details WHERE product_id = ?').bind(product.id).first();
     if (detail?.stock_qty === 0) return json({ error: 'This product is out of stock.' }, 409);

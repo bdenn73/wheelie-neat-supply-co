@@ -32,7 +32,7 @@ function render() {
       if (!confirm(`Delete ${item.name}?`)) return;
       try { await api(`/api/admin/products/${item.id}`, { method: 'DELETE' }); await refresh(); reset(); message('Product deleted.'); } catch (error) { message(error.message); }
     }, 'danger'));
-    if (sandboxCheckout && item.available && item.stockQty !== 0) actions.append(action('Test checkout', async () => {
+    if (sandboxCheckout && item.stockQty !== 0) actions.append(action('Test checkout', async () => {
       try { const result = await api('/api/checkout/sandbox/create', { method: 'POST', body: JSON.stringify({ productId: item.id }) }); window.location.assign(result.approval); }
       catch (error) { message(error.message); }
     }));
