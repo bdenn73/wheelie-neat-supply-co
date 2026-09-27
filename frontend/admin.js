@@ -52,6 +52,27 @@ async function refreshCheckout() {
     list.append(row);
   });
 }
+async function refreshScout() {
+  const result = await api('/api/admin/scout');
+  const container = document.getElementById('scout-results'); container.replaceChildren();
+  if (!result.candidates.length) { container.textContent = 'No supplier signals saved yet. The scan runs daily after the CJ key is connected.'; return; }
+  result.candidates.slice(0, 10).forEach(candidate => {
+    const row = document.createElement('div'); row.className = 'inventory-row';
+    const details = document.createElement('div');
+    const title = document.createElement('h3'); title.textContent = candidate.name;
+    const meta = document.createElement('p'); meta.textContent = `CJ ID: ${candidate.id} · ${candidate.keyword} · Supplier price: ${candidate.supplierPrice || 'Check CJ'} · Seen: ${new Date(candidate.observedAt).toLocaleDateString()}`;
+    details.append(title, meta);
+    row.append(details, action('Use as draft', () => {
+      reset(); form.elements.namedItem('name').value = candidate.name.slice(0, 100);
+      form.elements.namedItem('sku').value = candidate.sku || '';
+      form.elements.namedItem('supplier').value = `CJdropshipping ${candidate.id}`.slice(0, 150);
+      if (/^\d+(\.\d{1,2})?$/.test(candidate.supplierPrice)) form.elements.namedItem('unitCost').value = candidate.supplierPrice;
+      message('CJ candidate copied into a hidden draft. Verify exact product, shipping, and inventory before saving.');
+      form.scrollIntoView({ behavior: 'smooth' });
+    }));
+    container.append(row);
+  });
+}
 async function refreshSecurity() {
   const state = await api('/api/admin/security');
   lockdown = state.lockdown;
@@ -94,7 +115,7 @@ document.getElementById('lockdown').addEventListener('click', async () => {
 });
 document.getElementById('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  try { await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: document.getElementById('password').value }) }); document.getElementById('password').value = ''; showManager(true); await Promise.all([refreshCheckout(), refreshSecurity()]); await refresh(); message('Signed in.'); }
+  try { await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: document.getElementById('password').value }) }); document.getElementById('password').value = ''; showManager(true); await Promise.all([refreshCheckout(), refreshSecurity(), refreshScout()]); await refresh(); message('Signed in.'); }
   catch (error) { message(error.message); }
 });
 form.addEventListener('submit', async event => {
@@ -118,4 +139,4 @@ document.getElementById('draft').addEventListener('click', async () => {
   finally { button.disabled = false; }
 });
 document.getElementById('logout').addEventListener('click', async () => { await api('/api/admin/logout', { method: 'POST' }); showManager(false); reset(); message('Signed out.'); });
-api('/api/admin/session').then(async state => { showManager(state.authenticated); if (!state.configured) message('Owner login needs to be configured before products can be managed.'); if (state.authenticated) { await Promise.all([refreshCheckout(), refreshSecurity()]); await refresh(); } }).catch(error => message(error.message));
+api('/api/admin/session').then(async state => { showManager(state.authenticated); if (!state.configured) message('Owner login needs to be configured before products can be managed.'); if (state.authenticated) { await Promise.all([refreshCheckout(), refreshSecurity(), refreshScout()]); await refresh(); } }).catch(error => message(error.message));

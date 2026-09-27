@@ -66,6 +66,27 @@ async function securityTable(db) {
 async function ordersTable(db) {
   await db.prepare("CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, paypal_id TEXT UNIQUE NOT NULL, product_id TEXT NOT NULL, price_cents INTEGER NOT NULL, status TEXT NOT NULL, capture_id TEXT, created_at INTEGER NOT NULL)").run();
 }
+async function signalsTable(db) {
+  await db.prepare("CREATE TABLE IF NOT EXISTS market_signals (id TEXT PRIMARY KEY, name TEXT NOT NULL, sku TEXT, supplier_price TEXT, keyword TEXT NOT NULL, observed_at INTEGER NOT NULL)").run();
+}
+async function signals(db) {
+  await signalsTable(db);
+  return (await db.prepare('SELECT id, name, sku, supplier_price AS supplierPrice, keyword, observed_at AS observedAt FROM market_signals ORDER BY observed_at DESC LIMIT 30').all()).results;
+}
+async function scanSupplier(env) {
+  if (!env.DB || !env.CJ_API_KEY) return;
+  const keywords = ['storage organizer', 'desk organizer', 'utility tools'];
+  const keyword = keywords[Math.floor(Date.now() / 86400000) % keywords.length];
+  const candidates = await searchCJ(env.CJ_API_KEY, keyword, true);
+  await signalsTable(env.DB);
+  const observed = Date.now();
+  for (const item of candidates) {
+    if (!item.id || !item.name) continue;
+    await env.DB.prepare('INSERT INTO market_signals (id, name, sku, supplier_price, keyword, observed_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, sku = excluded.sku, supplier_price = excluded.supplier_price, keyword = excluded.keyword, observed_at = excluded.observed_at')
+      .bind(item.id, item.name, item.sku, item.supplierPrice, keyword, observed).run();
+  }
+  await env.DB.prepare('DELETE FROM market_signals WHERE observed_at < ?').bind(observed - 30 * 86400000).run();
+}
 async function locked(db) {
   await securityTable(db);
   const state = await db.prepare('SELECT value FROM operations WHERE key = ?').bind('lockdown').first();
@@ -179,6 +200,7 @@ async function api(request, env, path) {
     await ordersTable(db);
     return json((await db.prepare('SELECT o.id, o.price_cents, o.status, o.created_at, p.name AS product_name FROM orders o LEFT JOIN products p ON p.id = o.product_id ORDER BY o.created_at DESC LIMIT 50').all()).results);
   }
+  if (request.method === 'GET' && path === '/api/admin/scout') return json({ source: 'CJdropshipping trending catalog flag', candidates: await signals(db) });
   if (request.method === 'GET' && path === '/api/admin/supplier/search') {
     if (!env.CJ_API_KEY) return json({ error: 'Add the CJ_API_KEY secret in Cloudflare to search CJ products.' }, 503);
     await db.prepare('CREATE TABLE IF NOT EXISTS supplier_usage (session_id TEXT PRIMARY KEY, count INTEGER NOT NULL, expires_at INTEGER NOT NULL)').run();
@@ -218,7 +240,8 @@ async function api(request, env, path) {
       .bind(id, usage?.expires_at > now ? usage.count + 1 : 1, usage?.expires_at > now ? usage.expires_at : now + 3600000).run();
     try {
       const catalog = await products(db);
-      const response = env.AI ? await cloudflareReply({ ai: env.AI, messages, catalog }) : await reply({ messages, catalog, key: env.OPENAI_API_KEY, model: env.OPENAI_MODEL });
+      const marketSignals = await signals(db);
+      const response = env.AI ? await cloudflareReply({ ai: env.AI, messages, catalog, marketSignals }) : await reply({ messages, catalog, marketSignals, key: env.OPENAI_API_KEY, model: env.OPENAI_MODEL });
       return json(draft ? { description: response.slice(0, 500), priceCents, pricingNote: priceCents === null ? 'Add a unit cost to calculate a price.' : `Suggested price uses entered cost, shipping, an estimated domestic PayPal Checkout fee (3.49% + $0.49), and ${input.targetMargin}% target margin. Other fees, taxes, returns and overhead are excluded. Review before publishing.` } : { reply: response });
     } catch (error) { console.error('Aria request:', error.message); return json({ error: 'Aria could not reply right now. The free AI allowance may be exhausted; please try later.' }, 502); }
   }
@@ -249,6 +272,10 @@ async function api(request, env, path) {
 }
 
 export default {
+  async scheduled(_controller, env) {
+    try { await scanSupplier(env); }
+    catch (error) { console.error('Daily supplier scan:', error.message); }
+  },
   async fetch(request, env) {
     try {
       const path = new URL(request.url).pathname;
