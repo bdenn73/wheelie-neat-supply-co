@@ -5,6 +5,7 @@
   "ai": { "binding": "AI" },
   "triggers": { "crons": ["0 12 * * *"] },
   "compatibility_date": "2026-09-01",
+  "vars": { "PAYPAL_MODE": "sandbox" },
   "assets": {
     "directory": "./frontend",
     "binding": "ASSETS",
