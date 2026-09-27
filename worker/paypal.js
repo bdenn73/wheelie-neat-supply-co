@@ -23,9 +23,17 @@ export async function createPayPalOrder(env, { id, name, priceCents, origin }) {
     signal: AbortSignal.timeout(15000)
   });
   const order = await response.json();
+  if (!response.ok) {
+    const code = /^[A-Z0-9_]{3,64}$/.test(order.name || '') ? order.name : 'API_ERROR';
+    const issue = /^[A-Z0-9_]{3,64}$/.test(order.details?.[0]?.issue || '') ? ` / ${order.details[0].issue}` : '';
+    const debugId = /^[a-z0-9]{6,32}$/i.test(order.debug_id || '') ? ` (debug ID ${order.debug_id})` : '';
+    const error = new Error('PayPal order creation failed.');
+    error.ownerMessage = `PayPal returned HTTP ${response.status}: ${code}${issue}${debugId}.`;
+    throw error;
+  }
   const approval = order.links?.find(link => ['payer-action', 'approve'].includes(link.rel))?.href;
   const host = approval && new URL(approval).hostname;
-  if (!response.ok || !order.id || !['www.paypal.com', 'www.sandbox.paypal.com'].includes(host)) throw new Error('PayPal order creation failed.');
+  if (!order.id || !['www.paypal.com', 'www.sandbox.paypal.com'].includes(host)) throw new Error('PayPal order creation failed.');
   return { paypalId: order.id, approval };
 }
 

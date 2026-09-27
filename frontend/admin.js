@@ -32,10 +32,31 @@ function render() {
       if (!confirm(`Delete ${item.name}?`)) return;
       try { await api(`/api/admin/products/${item.id}`, { method: 'DELETE' }); await refresh(); reset(); message('Product deleted.'); } catch (error) { message(error.message); }
     }, 'danger'));
-    if (sandboxCheckout && item.stockQty !== 0) actions.append(action('Test checkout', async () => {
-      try { const result = await api('/api/checkout/sandbox/create', { method: 'POST', body: JSON.stringify({ productId: item.id }) }); window.location.assign(result.approval); }
-      catch (error) { message(error.message); }
-    }));
+    if (sandboxCheckout && item.stockQty !== 0) {
+      const checkoutStatus = document.createElement('p');
+      checkoutStatus.className = 'checkout-status';
+      checkoutStatus.setAttribute('role', 'status');
+      const approval = document.createElement('a');
+      approval.className = 'secondary';
+      approval.textContent = 'Open PayPal test checkout';
+      approval.rel = 'noopener noreferrer';
+      approval.hidden = true;
+      const checkoutButton = action('Test checkout', async () => {
+        checkoutButton.disabled = true;
+        checkoutStatus.textContent = 'Creating PayPal sandbox order…';
+        approval.hidden = true;
+        try {
+          const result = await api('/api/checkout/sandbox/create', { method: 'POST', body: JSON.stringify({ productId: item.id }) });
+          approval.href = result.approval;
+          approval.hidden = false;
+          checkoutStatus.textContent = 'Test order ready. Tap the PayPal link to continue.';
+        } catch (error) {
+          checkoutStatus.textContent = error.message;
+          checkoutButton.disabled = false;
+        }
+      });
+      actions.append(checkoutButton, approval, checkoutStatus);
+    }
     row.append(detail, actions); inventory.append(row);
   });
 }
@@ -43,7 +64,7 @@ async function refresh() { items = await api('/api/admin/products'); render(); }
 async function refreshCheckout() {
   const checkout = await api('/api/checkout/status');
   sandboxCheckout = checkout.sandbox;
-  document.getElementById('checkout-connection').textContent = sandboxCheckout ? 'PayPal sandbox is connected. Published products have a Test checkout action; no real money moves.' : 'PayPal sandbox is waiting for PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and PAYPAL_MODE=sandbox in Cloudflare.';
+  document.getElementById('checkout-connection').textContent = sandboxCheckout ? 'PayPal sandbox credentials are configured. Saved in-stock products have a Test checkout action; no real money moves.' : 'PayPal sandbox is waiting for PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and PAYPAL_MODE=sandbox in Cloudflare.';
   const orders = await api('/api/admin/orders');
   const list = document.getElementById('orders'); list.replaceChildren();
   orders.slice(0, 10).forEach(order => {

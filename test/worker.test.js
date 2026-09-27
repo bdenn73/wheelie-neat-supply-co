@@ -93,6 +93,16 @@ test('free-tier Worker keeps catalog and owner sessions in D1', async () => {
     assert.equal((await request('/api/checkout/sandbox/capture', 'POST', { token: 'PAYPAL-123' })).status, 401);
     const captured = await request('/api/checkout/sandbox/capture', 'POST', { token: 'PAYPAL-123' }, cookie);
     assert.equal((await captured.json()).status, 'completed');
+    global.fetch = async url => String(url).endsWith('/v1/oauth2/token')
+      ? new Response(JSON.stringify({ access_token: 'test-paypal-token' }), { status: 200 })
+      : new Response(JSON.stringify({ name: 'INVALID_REQUEST', details: [{ issue: 'INVALID_PARAMETER_VALUE' }], debug_id: 'a1b2c3d4e5f6' }), { status: 400 });
+    const rejected = await request('/api/checkout/sandbox/create', 'POST', { productId: item.id }, cookie);
+    assert.equal(rejected.status, 502);
+    assert.match((await rejected.json()).error, /HTTP 400: INVALID_REQUEST \/ INVALID_PARAMETER_VALUE \(debug ID a1b2c3d4e5f6\)/);
+    global.fetch = async () => new Response(JSON.stringify({ error: 'invalid_client' }), { status: 401 });
+    const badCredentials = await request('/api/checkout/sandbox/create', 'POST', { productId: item.id }, cookie);
+    assert.equal(badCredentials.status, 502);
+    assert.match((await badCredentials.json()).error, /sandbox authentication failed/);
   } finally { global.fetch = originalFetch; }
   assert.equal(sqlite.prepare('SELECT count(*) AS n FROM products').get().n, 1);
   await request('/api/admin/logout', 'POST', null, cookie);

@@ -177,7 +177,12 @@ async function api(request, env, path) {
       await db.prepare('INSERT INTO orders (id, paypal_id, product_id, price_cents, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
         .bind(orderId, result.paypalId, product.id, product.price_cents, 'created', Date.now()).run();
       return json({ approval: result.approval, orderId }, 201);
-    } catch (error) { console.error('Sandbox checkout create:', error.message); return json({ error: 'PayPal sandbox could not create an order.' }, 502); }
+    } catch (error) {
+      console.error('Sandbox checkout create:', error.ownerMessage || error.message);
+      return json({ error: error.message === 'PayPal authentication failed.'
+        ? 'PayPal sandbox authentication failed. Check that the Client ID and Secret in Cloudflare are from the same sandbox app.'
+        : error.ownerMessage || 'PayPal sandbox could not create an order. Try again or check the Worker logs.' }, 502);
+    }
   }
   if (request.method === 'POST' && path === '/api/checkout/sandbox/capture') {
     if (!await authenticated(db, request)) return json({ error: 'Owner sign-in required for sandbox checkout.' }, 401);
