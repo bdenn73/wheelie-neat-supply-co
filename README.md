@@ -27,3 +27,7 @@ The existing GitHub-to-Cloudflare deployment can update code and bindings. It do
 ## Daily Aria supplier scout
 
 The Worker has a 12:00 UTC daily Cron Trigger. When `CJ_API_KEY` is configured, it rotates through storage organizers, desk organizers, and utility tools, asking CJ for catalog items with CJ's trending flag and US verified warehouse inventory. It saves at most ten candidates per run in the private D1 `market_signals` table and removes observations older than 30 days. The owner area displays the saved candidates, and Aria chat receives up to 15 of them as context. A CJ trending flag is not evidence of overall market demand or a guaranteed sale. Nothing is published, bought, or priced automatically from the scan.
+
+## Read-only Cloudflare status connection
+
+The `.github/workflows/cloudflare-status.yml` workflow reads the most recent deployments for this one Worker each day or on a manual run. It has no GitHub repository permissions and no write operation. To enable it, create a Cloudflare API token limited to Workers Scripts Read for the Wheelie Neat Worker, then privately add it as the GitHub repository secret `CF_STATUS_TOKEN`. Add the Cloudflare account ID as `CF_ACCOUNT_ID`. The token is not committed or printed. This gives deployment visibility through GitHub Actions, not dashboard or secret-edit access. Revoke it in Cloudflare to disconnect. Keep `ADMIN_PASSWORD`, CJ, and PayPal credentials in Cloudflare Worker secrets, not in this workflow.
