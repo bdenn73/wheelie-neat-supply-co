@@ -16,6 +16,8 @@ test('catalog is empty until owner publishes a product; mutations require login 
   assert.deepEqual(await (await call('/api/products')).json(), []);
   const forbidden = await call('/api/admin/products', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Private', price: '10.00', available: true }) });
   assert.equal(forbidden.status, 401);
+  const ariaForbidden = await call('/api/admin/aria', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }) });
+  assert.equal(ariaForbidden.status, 401);
   const login = await call('/api/admin/login', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ password: process.env.ADMIN_PASSWORD }) });
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];

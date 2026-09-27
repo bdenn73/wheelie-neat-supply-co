@@ -2,12 +2,14 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const aria = require('./aria');
 
 const publicDir = path.resolve(__dirname, '../frontend');
 const dataFile = path.resolve(process.env.DATA_FILE || path.join(__dirname, '../data/products.json'));
 const password = process.env.ADMIN_PASSWORD;
 const sessions = new Map();
 const attempts = new Map();
+const ariaUsage = new Map();
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 function send(res, status, value, headers = {}) {
@@ -54,7 +56,7 @@ const server = http.createServer(async (req, res) => {
     const pathname = new URL(req.url, 'http://localhost').pathname;
     if (pathname.startsWith('/api/')) {
       if (req.method === 'GET' && pathname === '/api/products') return send(res, 200, products().filter(item => item.available));
-      if (req.method === 'GET' && pathname === '/api/admin/session') return send(res, 200, { authenticated: !!token(req), configured: !!password });
+      if (req.method === 'GET' && pathname === '/api/admin/session') return send(res, 200, { authenticated: !!token(req), configured: !!password, ariaConfigured: !!process.env.OPENAI_API_KEY });
       if (req.method !== 'GET' && !originAllowed(req)) return send(res, 403, { error: 'Invalid request origin.' });
       if (req.method === 'POST' && pathname === '/api/admin/login') {
         if (!password) return send(res, 503, { error: 'Owner login is not configured.' });
@@ -79,6 +81,17 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { authenticated: false }, { 'Set-Cookie': 'wn_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
       }
       if (pathname.startsWith('/api/admin/') && !token(req)) return send(res, 401, { error: 'Sign in to manage products.' });
+      if (req.method === 'POST' && pathname === '/api/admin/aria') {
+        if (!process.env.OPENAI_API_KEY) return send(res, 503, { error: 'Aria needs an API key before she can reply.' });
+        const id = token(req);
+        const usage = ariaUsage.get(id) || { count: 0, until: 0 };
+        if (usage.count >= 20 && usage.until > Date.now()) return send(res, 429, { error: 'Aria has reached the hourly limit. Please try later.' });
+        const input = await readBody(req);
+        const messages = aria.validateMessages(input?.messages);
+        ariaUsage.set(id, { count: usage.until > Date.now() ? usage.count + 1 : 1, until: Date.now() + 3600000 });
+        try { return send(res, 200, { reply: await aria.reply({ messages, catalog: products(), key: process.env.OPENAI_API_KEY }) }); }
+        catch (error) { console.error('Aria request:', error.message); return send(res, 502, { error: 'Aria could not reply right now. Please try again.' }); }
+      }
       if (req.method === 'GET' && pathname === '/api/admin/products') return send(res, 200, products());
       if (req.method === 'POST' && pathname === '/api/admin/products') {
         const item = { id: crypto.randomUUID(), ...validate(await readBody(req)) };
@@ -106,7 +119,7 @@ const server = http.createServer(async (req, res) => {
       res.end(req.method === 'HEAD' ? undefined : content);
     });
   } catch (error) {
-    const invalid = ['Invalid JSON.', 'Request too large.', 'Enter a name and a valid price.'].includes(error.message);
+    const invalid = ['Invalid JSON.', 'Request too large.', 'Enter a name and a valid price.', 'Send between 1 and 8 messages.', 'Each message must contain up to 1,000 characters.', 'The last message must be yours.'].includes(error.message);
     if (!invalid) console.error(error);
     send(res, invalid ? 400 : 500, { error: invalid ? error.message : 'Server error.' });
   }
