@@ -1,5 +1,7 @@
 // Cloudflare Workers version of the catalog API. Static files live in /frontend.
 import { validateMessages, reply, cloudflareReply } from './aria.js';
+import { searchCJ } from './cj.js';
+import { checkoutReady, createPayPalOrder, capturePayPalOrder } from './paypal.js';
 
 const json = (value, status = 200, headers = {}) => new Response(JSON.stringify(value), {
   status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers }
@@ -61,6 +63,9 @@ async function securityTable(db) {
   await db.prepare('CREATE TABLE IF NOT EXISTS security_events (id TEXT PRIMARY KEY, kind TEXT NOT NULL, actor_hash TEXT, created_at INTEGER NOT NULL)').run();
   await db.prepare('CREATE TABLE IF NOT EXISTS operations (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
 }
+async function ordersTable(db) {
+  await db.prepare("CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, paypal_id TEXT UNIQUE NOT NULL, product_id TEXT NOT NULL, price_cents INTEGER NOT NULL, status TEXT NOT NULL, capture_id TEXT, created_at INTEGER NOT NULL)").run();
+}
 async function locked(db) {
   await securityTable(db);
   const state = await db.prepare('SELECT value FROM operations WHERE key = ?').bind('lockdown').first();
@@ -80,7 +85,9 @@ function suggestedPrice(input) {
   const shipping = Number(input?.shippingCostCents || 0);
   const margin = Number(input?.targetMargin);
   if (!Number.isInteger(cost) || cost < 1 || !Number.isInteger(shipping) || shipping < 0 || !Number.isFinite(margin) || margin < 5 || margin > 70) throw new Error('Enter a unit cost and target margin from 5% to 70%.');
-  return Math.ceil((cost + shipping) / (1 - margin / 100));
+  // Estimate domestic PayPal Checkout at 3.49% plus $0.49 per transaction.
+  // Keep the assumption visible to the owner; rates vary by payment method and location.
+  return Math.ceil((cost + shipping + 49) / (1 - margin / 100 - 0.0349));
 }
 async function authenticated(db, request) {
   const id = sessionId(request);
@@ -97,8 +104,9 @@ async function api(request, env, path) {
     const isLocked = await locked(db);
     return json(isLocked ? [] : await products(db, true), 200, { 'X-Catalog-Lockdown': isLocked ? 'on' : 'off' });
   }
+  if (request.method === 'GET' && path === '/api/checkout/status') return json({ live: false, sandbox: env.PAYPAL_MODE === 'sandbox' && checkoutReady(env) });
   if (request.method === 'GET' && path === '/api/admin/session') return json({
-    authenticated: !!(await authenticated(db, request)), configured: !!env.ADMIN_PASSWORD, ariaConfigured: !!(env.AI || env.OPENAI_API_KEY)
+    authenticated: !!(await authenticated(db, request)), configured: !!env.ADMIN_PASSWORD, ariaConfigured: !!(env.AI || env.OPENAI_API_KEY), supplierConfigured: !!env.CJ_API_KEY
   });
   if (request.method !== 'GET' && !originAllowed(request)) return json({ error: 'Invalid request origin.' }, 403);
   if (request.method === 'POST' && path === '/api/admin/login') {
@@ -130,8 +138,58 @@ async function api(request, env, path) {
     if (id) await db.prepare('DELETE FROM sessions WHERE id = ?').bind(id).run();
     return json({ authenticated: false }, 200, { 'Set-Cookie': cookie('', 0) });
   }
+  if (request.method === 'POST' && path === '/api/checkout/sandbox/create') {
+    if (!await authenticated(db, request)) return json({ error: 'Owner sign-in required for sandbox checkout.' }, 401);
+    if (env.PAYPAL_MODE !== 'sandbox' || !checkoutReady(env)) return json({ error: 'PayPal sandbox credentials are not configured.' }, 503);
+    if (await locked(db)) return json({ error: 'Catalog lockdown is on.' }, 423);
+    const input = await body(request);
+    if (typeof input?.productId !== 'string' || !/^[a-f0-9-]{36}$/.test(input.productId)) return json({ error: 'Choose a product.' }, 400);
+    const product = await db.prepare('SELECT id, name, price_cents, available FROM products WHERE id = ?').bind(input.productId).first();
+    if (!product || !product.available) return json({ error: 'This product is unavailable.' }, 409);
+    await detailsTable(db);
+    const detail = await db.prepare('SELECT stock_qty FROM product_details WHERE product_id = ?').bind(product.id).first();
+    if (detail?.stock_qty === 0) return json({ error: 'This product is out of stock.' }, 409);
+    const orderId = crypto.randomUUID();
+    try {
+      const result = await createPayPalOrder(env, { id: orderId, name: product.name, priceCents: product.price_cents, origin: new URL(request.url).origin });
+      await ordersTable(db);
+      await db.prepare('INSERT INTO orders (id, paypal_id, product_id, price_cents, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(orderId, result.paypalId, product.id, product.price_cents, 'created', Date.now()).run();
+      return json({ approval: result.approval, orderId }, 201);
+    } catch (error) { console.error('Sandbox checkout create:', error.message); return json({ error: 'PayPal sandbox could not create an order.' }, 502); }
+  }
+  if (request.method === 'POST' && path === '/api/checkout/sandbox/capture') {
+    if (!await authenticated(db, request)) return json({ error: 'Owner sign-in required for sandbox checkout.' }, 401);
+    if (env.PAYPAL_MODE !== 'sandbox' || !checkoutReady(env)) return json({ error: 'PayPal sandbox credentials are not configured.' }, 503);
+    const input = await body(request);
+    if (typeof input?.token !== 'string' || !/^[A-Za-z0-9-]{5,64}$/.test(input.token)) return json({ error: 'Invalid PayPal order token.' }, 400);
+    await ordersTable(db);
+    const order = await db.prepare('SELECT id, paypal_id, price_cents, status FROM orders WHERE paypal_id = ?').bind(input.token).first();
+    if (!order) return json({ error: 'Order not found.' }, 404);
+    if (order.status === 'completed') return json({ status: 'completed', orderId: order.id });
+    try {
+      const capture = await capturePayPalOrder(env, { paypalId: order.paypal_id, id: order.id, priceCents: order.price_cents });
+      await db.prepare('UPDATE orders SET status = ?, capture_id = ? WHERE id = ? AND status = ?').bind('completed', capture.captureId, order.id, 'created').run();
+      return json({ status: 'completed', orderId: order.id });
+    } catch (error) { console.error('Sandbox checkout capture:', error.message); return json({ error: 'PayPal sandbox capture could not be verified.' }, 502); }
+  }
   const id = await authenticated(db, request);
   if (!id) return json({ error: 'Sign in to manage products.' }, 401);
+  if (request.method === 'GET' && path === '/api/admin/orders') {
+    await ordersTable(db);
+    return json((await db.prepare('SELECT o.id, o.price_cents, o.status, o.created_at, p.name AS product_name FROM orders o LEFT JOIN products p ON p.id = o.product_id ORDER BY o.created_at DESC LIMIT 50').all()).results);
+  }
+  if (request.method === 'GET' && path === '/api/admin/supplier/search') {
+    if (!env.CJ_API_KEY) return json({ error: 'Add the CJ_API_KEY secret in Cloudflare to search CJ products.' }, 503);
+    await db.prepare('CREATE TABLE IF NOT EXISTS supplier_usage (session_id TEXT PRIMARY KEY, count INTEGER NOT NULL, expires_at INTEGER NOT NULL)').run();
+    const now = Date.now();
+    const usage = await db.prepare('SELECT count, expires_at FROM supplier_usage WHERE session_id = ?').bind(id).first();
+    if (usage?.count >= 20 && usage.expires_at > now) return json({ error: 'Supplier search limit reached for this hour.' }, 429);
+    await db.prepare('INSERT INTO supplier_usage (session_id, count, expires_at) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET count = excluded.count, expires_at = excluded.expires_at')
+      .bind(id, usage?.expires_at > now ? usage.count + 1 : 1, usage?.expires_at > now ? usage.expires_at : now + 3600000).run();
+    try { return json({ products: await searchCJ(env.CJ_API_KEY, new URL(request.url).searchParams.get('q')) }); }
+    catch (error) { if (error.message.startsWith('Enter a supplier search')) return json({ error: error.message }, 400); console.error('Supplier search:', error.message); return json({ error: 'Supplier search unavailable. Check the CJ connection and try later.' }, 502); }
+  }
   if (request.method === 'GET' && path === '/api/admin/security') {
     const isLocked = await locked(db);
     const since = Date.now() - 7 * 86400000;
@@ -161,7 +219,7 @@ async function api(request, env, path) {
     try {
       const catalog = await products(db);
       const response = env.AI ? await cloudflareReply({ ai: env.AI, messages, catalog }) : await reply({ messages, catalog, key: env.OPENAI_API_KEY, model: env.OPENAI_MODEL });
-      return json(draft ? { description: response.slice(0, 500), priceCents, pricingNote: priceCents === null ? 'Add a unit cost to calculate a price.' : `Suggested price uses the entered cost, shipping and ${input.targetMargin}% target gross margin; taxes and selling fees are excluded. Review before publishing.` } : { reply: response });
+      return json(draft ? { description: response.slice(0, 500), priceCents, pricingNote: priceCents === null ? 'Add a unit cost to calculate a price.' : `Suggested price uses entered cost, shipping, an estimated domestic PayPal Checkout fee (3.49% + $0.49), and ${input.targetMargin}% target margin. Other fees, taxes, returns and overhead are excluded. Review before publishing.` } : { reply: response });
     } catch (error) { console.error('Aria request:', error.message); return json({ error: 'Aria could not reply right now. The free AI allowance may be exhausted; please try later.' }, 502); }
   }
   if (request.method === 'GET' && path === '/api/admin/products') return json(await products(db));
