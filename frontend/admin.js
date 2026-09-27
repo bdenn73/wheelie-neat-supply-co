@@ -7,6 +7,7 @@ const cancel = document.getElementById('cancel');
 let editing = null;
 let items = [];
 let lockdown = false;
+let sandboxCheckout = false;
 async function api(url, options = {}) {
   const response = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
   const value = await response.json();
@@ -31,10 +32,26 @@ function render() {
       if (!confirm(`Delete ${item.name}?`)) return;
       try { await api(`/api/admin/products/${item.id}`, { method: 'DELETE' }); await refresh(); reset(); message('Product deleted.'); } catch (error) { message(error.message); }
     }, 'danger'));
+    if (sandboxCheckout && item.available && item.stockQty !== 0) actions.append(action('Test checkout', async () => {
+      try { const result = await api('/api/checkout/sandbox/create', { method: 'POST', body: JSON.stringify({ productId: item.id }) }); window.location.assign(result.approval); }
+      catch (error) { message(error.message); }
+    }));
     row.append(detail, actions); inventory.append(row);
   });
 }
 async function refresh() { items = await api('/api/admin/products'); render(); }
+async function refreshCheckout() {
+  const checkout = await api('/api/checkout/status');
+  sandboxCheckout = checkout.sandbox;
+  document.getElementById('checkout-connection').textContent = sandboxCheckout ? 'PayPal sandbox is connected. Published products have a Test checkout action; no real money moves.' : 'PayPal sandbox is waiting for PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and PAYPAL_MODE=sandbox in Cloudflare.';
+  const orders = await api('/api/admin/orders');
+  const list = document.getElementById('orders'); list.replaceChildren();
+  orders.slice(0, 10).forEach(order => {
+    const row = document.createElement('p');
+    row.textContent = `${order.product_name || 'Deleted product'} · $${(order.price_cents / 100).toFixed(2)} · ${order.status} · ${new Date(order.created_at).toLocaleString()}`;
+    list.append(row);
+  });
+}
 async function refreshSecurity() {
   const state = await api('/api/admin/security');
   lockdown = state.lockdown;
@@ -43,13 +60,41 @@ async function refreshSecurity() {
   button.textContent = lockdown ? 'Restore public catalog' : 'Turn on lockdown';
   button.className = lockdown ? 'secondary' : 'danger';
 }
+document.getElementById('supplier-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = document.getElementById('supplier-search');
+  const results = document.getElementById('supplier-results');
+  button.disabled = true; results.textContent = 'Searching supplier catalog…';
+  try {
+    const data = await api(`/api/admin/supplier/search?q=${encodeURIComponent(document.getElementById('supplier-query').value.trim())}`);
+    results.replaceChildren();
+    if (!data.products.length) { results.textContent = 'No matching products found.'; return; }
+    data.products.forEach(product => {
+      const row = document.createElement('div'); row.className = 'inventory-row';
+      const details = document.createElement('div');
+      const heading = document.createElement('h3'); heading.textContent = product.name;
+      const summary = document.createElement('p'); summary.textContent = `CJ ID: ${product.id} · SKU: ${product.sku || 'Unknown'} · Supplier price: ${product.supplierPrice || 'Check CJ'}`;
+      details.append(heading, summary);
+      row.append(details, action('Use as draft', () => {
+        reset(); form.elements.namedItem('name').value = product.name.slice(0, 100);
+        form.elements.namedItem('sku').value = product.sku;
+        form.elements.namedItem('supplier').value = `CJdropshipping ${product.id}`.slice(0, 150);
+        if (/^\d+(\.\d{1,2})?$/.test(product.supplierPrice)) form.elements.namedItem('unitCost').value = product.supplierPrice;
+        message('Supplier candidate copied into a hidden draft. Check the exact variant, cost, shipping, and stock before asking Aria to draft.');
+        form.scrollIntoView({ behavior: 'smooth' });
+      }));
+      results.append(row);
+    });
+  } catch (error) { results.textContent = error.message; }
+  finally { button.disabled = false; }
+});
 document.getElementById('lockdown').addEventListener('click', async () => {
   try { await api('/api/admin/security/lockdown', { method: 'POST', body: JSON.stringify({ lockdown: !lockdown }) }); await refreshSecurity(); message(lockdown ? 'Emergency lockdown is on. Public listings are hidden.' : 'Public catalog restored.'); }
   catch (error) { message(error.message); }
 });
 document.getElementById('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  try { await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: document.getElementById('password').value }) }); document.getElementById('password').value = ''; showManager(true); await Promise.all([refresh(), refreshSecurity()]); message('Signed in.'); }
+  try { await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ password: document.getElementById('password').value }) }); document.getElementById('password').value = ''; showManager(true); await Promise.all([refreshCheckout(), refreshSecurity()]); await refresh(); message('Signed in.'); }
   catch (error) { message(error.message); }
 });
 form.addEventListener('submit', async event => {
@@ -73,4 +118,4 @@ document.getElementById('draft').addEventListener('click', async () => {
   finally { button.disabled = false; }
 });
 document.getElementById('logout').addEventListener('click', async () => { await api('/api/admin/logout', { method: 'POST' }); showManager(false); reset(); message('Signed out.'); });
-api('/api/admin/session').then(async state => { showManager(state.authenticated); if (!state.configured) message('Owner login needs to be configured before products can be managed.'); if (state.authenticated) await Promise.all([refresh(), refreshSecurity()]); }).catch(error => message(error.message));
+api('/api/admin/session').then(async state => { showManager(state.authenticated); if (!state.configured) message('Owner login needs to be configured before products can be managed.'); if (state.authenticated) { await Promise.all([refreshCheckout(), refreshSecurity()]); await refresh(); } }).catch(error => message(error.message));
