@@ -4,6 +4,14 @@ import { validateMessages, reply, cloudflareReply } from './aria.js';
 const json = (value, status = 200, headers = {}) => new Response(JSON.stringify(value), {
   status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers }
 });
+function hardened(response) {
+  const copy = new Response(response.body, response);
+  copy.headers.set('X-Content-Type-Options', 'nosniff');
+  copy.headers.set('X-Frame-Options', 'DENY');
+  copy.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  copy.headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+  return copy;
+}
 const hex = bytes => [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 const digest = async value => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
 const random = () => hex(crypto.getRandomValues(new Uint8Array(32)));
@@ -59,7 +67,10 @@ async function locked(db) {
   return state?.value === 'on';
 }
 async function products(db, publicOnly = false) {
-  if (publicOnly) return (await db.prepare('SELECT id, name, description, price_cents, available FROM products WHERE available = 1 ORDER BY rowid DESC').all()).results.map(mapProduct);
+  if (publicOnly) {
+    await detailsTable(db);
+    return (await db.prepare('SELECT p.id, p.name, p.description, p.price_cents, p.available FROM products p LEFT JOIN product_details d ON d.product_id = p.id WHERE p.available = 1 AND (d.stock_qty IS NULL OR d.stock_qty > 0) ORDER BY p.rowid DESC').all()).results.map(mapProduct);
+  }
   await detailsTable(db);
   const rows = (await db.prepare('SELECT p.id, p.name, p.description, p.price_cents, p.available, d.sku, d.supplier, d.unit_cost_cents, d.shipping_cost_cents, d.stock_qty FROM products p LEFT JOIN product_details d ON d.product_id = p.id ORDER BY p.rowid DESC').all()).results;
   return rows.map(row => ({ ...mapProduct(row), sku: row.sku || '', supplier: row.supplier || '', unitCostCents: row.unit_cost_cents ?? null, shippingCostCents: row.shipping_cost_cents ?? null, stockQty: row.stock_qty ?? null }));
@@ -183,12 +194,12 @@ export default {
   async fetch(request, env) {
     try {
       const path = new URL(request.url).pathname;
-      if (path.startsWith('/api/')) return await api(request, env, path);
-      return env.ASSETS.fetch(request);
+      if (path.startsWith('/api/')) return hardened(await api(request, env, path));
+      return hardened(await env.ASSETS.fetch(request));
     } catch (error) {
       const invalid = ['Invalid JSON.', 'Request too large.', 'Enter a name and a valid price.', 'Enter a product name first.', 'Choose whether lockdown is on or off.', 'SKU or supplier is too long.', 'Enter a valid unit cost.', 'Enter a valid shipping cost.', 'Enter a valid stock quantity.', 'Enter a unit cost and target margin from 5% to 70%.', 'Send between 1 and 8 messages.', 'Each message must contain up to 1,000 characters.', 'The last message must be yours.'].includes(error.message);
       if (!invalid) console.error('Request failed:', error.message);
-      return json({ error: invalid ? error.message : 'Server error.' }, invalid ? 400 : 500);
+      return hardened(json({ error: invalid ? error.message : 'Server error.' }, invalid ? 400 : 500));
     }
   }
 };

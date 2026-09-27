@@ -59,6 +59,10 @@ test('free-tier Worker keeps catalog and owner sessions in D1', async () => {
   assert.equal((await (await request('/api/admin/security', 'GET', null, cookie)).json()).lockdown, true);
   await request('/api/admin/security/lockdown', 'POST', { lockdown: false }, cookie);
   assert.equal((await (await request('/api/products')).json()).length, 1);
+  assert.equal((await request('/api/products')).headers.get('X-Frame-Options'), 'DENY');
+  await request('/api/admin/products/' + item.id, 'PUT', { name: item.name, description: 'Test', price: '12.50', available: true, stockQty: 0 }, cookie);
+  assert.deepEqual(await (await request('/api/products')).json(), []);
+  assert.equal((await (await request('/api/admin/products', 'GET', null, cookie)).json())[0].stockQty, 0);
   assert.equal(sqlite.prepare('SELECT count(*) AS n FROM products').get().n, 1);
   await request('/api/admin/logout', 'POST', null, cookie);
   assert.equal((await request('/api/admin/products', 'GET', null, cookie)).status, 401);
