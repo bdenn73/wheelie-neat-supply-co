@@ -1,18 +1,25 @@
 const endpoint = mode => mode === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
 
 async function accessToken(env) {
-  const auth = btoa(`${env.PAYPAL_CLIENT_ID}:${env.PAYPAL_CLIENT_SECRET}`);
+  const clientId = String(env.PAYPAL_CLIENT_ID || '').trim();
+  const clientSecret = String(env.PAYPAL_CLIENT_SECRET || '').trim();
+  const auth = btoa(`${clientId}:${clientSecret}`);
   const response = await fetch(`${endpoint(env.PAYPAL_MODE)}/v1/oauth2/token`, {
     method: 'POST', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'grant_type=client_credentials', signal: AbortSignal.timeout(15000)
   });
-  const data = await response.json();
-  if (!response.ok || !data.access_token) throw new Error('PayPal authentication failed.');
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) {
+    const code = /^[a-z0-9_]{3,64}$/i.test(data.error || '') ? data.error : 'NO_ACCESS_TOKEN';
+    const error = new Error('PayPal authentication failed.');
+    error.ownerMessage = `PayPal token request returned HTTP ${response.status}: ${code}.`;
+    throw error;
+  }
   return data.access_token;
 }
 
 export function checkoutReady(env) {
-  return !!(env.PAYPAL_CLIENT_ID && env.PAYPAL_CLIENT_SECRET && ['sandbox', 'live'].includes(env.PAYPAL_MODE));
+  return !!(String(env.PAYPAL_CLIENT_ID || '').trim() && String(env.PAYPAL_CLIENT_SECRET || '').trim() && ['sandbox', 'live'].includes(env.PAYPAL_MODE));
 }
 
 export async function createPayPalOrder(env, { id, name, priceCents, origin }) {
