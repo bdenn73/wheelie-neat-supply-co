@@ -71,7 +71,7 @@ test('free-tier Worker keeps catalog and owner sessions in D1', async () => {
     assert.equal(supplier.products[0].name, 'Storage organizer');
     assert.equal('apiKey' in supplier, false);
     env.PAYPAL_MODE = 'sandbox'; env.PAYPAL_CLIENT_ID = 'test-client'; env.PAYPAL_CLIENT_SECRET = 'test-secret';
-    await request('/api/admin/products/' + item.id, 'PUT', { name: item.name, price: '12.50', available: true, stockQty: 2 }, cookie);
+    await request('/api/admin/products/' + item.id, 'PUT', { name: item.name, price: '12.50', available: false, stockQty: 2 }, cookie);
     let createdPayPalId;
     global.fetch = async (url, options) => {
       if (String(url).endsWith('/v1/oauth2/token')) return new Response(JSON.stringify({ access_token: 'test-paypal-token' }), { status: 200 });
