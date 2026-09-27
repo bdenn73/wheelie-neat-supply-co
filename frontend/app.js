@@ -5,12 +5,13 @@ const money = cents => new Intl.NumberFormat('en-US', { style: 'currency', curre
 fetch('/api/products').then(async response => {
   if (!response.ok) throw new Error('Catalog unavailable');
   const products = await response.json();
+  const lockdown = response.headers.get('X-Catalog-Lockdown') === 'on';
   count.textContent = `${products.length} ${products.length === 1 ? 'item' : 'items'}`;
   list.replaceChildren();
   if (!products.length) {
     const empty = document.createElement('div'); empty.className = 'empty';
-    const heading = document.createElement('h3'); heading.textContent = 'Products are on their way.';
-    const message = document.createElement('p'); message.textContent = 'Check back soon for the first collection.';
+    const heading = document.createElement('h3'); heading.textContent = lockdown ? 'Catalog temporarily unavailable.' : 'Products are on their way.';
+    const message = document.createElement('p'); message.textContent = lockdown ? 'Please check back later.' : 'Check back soon for the first collection.';
     empty.append(heading, message); list.append(empty); return;
   }
   products.forEach(product => {

@@ -49,6 +49,15 @@ async function saveDetails(db, item) {
   await db.prepare('INSERT INTO product_details (product_id, sku, supplier, unit_cost_cents, shipping_cost_cents, stock_qty) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(product_id) DO UPDATE SET sku = excluded.sku, supplier = excluded.supplier, unit_cost_cents = excluded.unit_cost_cents, shipping_cost_cents = excluded.shipping_cost_cents, stock_qty = excluded.stock_qty')
     .bind(item.id, item.sku, item.supplier, item.unitCostCents, item.shippingCostCents, item.stockQty).run();
 }
+async function securityTable(db) {
+  await db.prepare('CREATE TABLE IF NOT EXISTS security_events (id TEXT PRIMARY KEY, kind TEXT NOT NULL, actor_hash TEXT, created_at INTEGER NOT NULL)').run();
+  await db.prepare('CREATE TABLE IF NOT EXISTS operations (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
+}
+async function locked(db) {
+  await securityTable(db);
+  const state = await db.prepare('SELECT value FROM operations WHERE key = ?').bind('lockdown').first();
+  return state?.value === 'on';
+}
 async function products(db, publicOnly = false) {
   if (publicOnly) return (await db.prepare('SELECT id, name, description, price_cents, available FROM products WHERE available = 1 ORDER BY rowid DESC').all()).results.map(mapProduct);
   await detailsTable(db);
@@ -73,7 +82,10 @@ const cookie = (id, age) => `wn_session=${id}; HttpOnly; Secure; SameSite=Strict
 async function api(request, env, path) {
   const db = env.DB;
   if (!db) return json({ error: 'Database is not configured.' }, 503);
-  if (request.method === 'GET' && path === '/api/products') return json(await products(db, true));
+  if (request.method === 'GET' && path === '/api/products') {
+    const isLocked = await locked(db);
+    return json(isLocked ? [] : await products(db, true), 200, { 'X-Catalog-Lockdown': isLocked ? 'on' : 'off' });
+  }
   if (request.method === 'GET' && path === '/api/admin/session') return json({
     authenticated: !!(await authenticated(db, request)), configured: !!env.ADMIN_PASSWORD, ariaConfigured: !!(env.AI || env.OPENAI_API_KEY)
   });
@@ -92,6 +104,9 @@ async function api(request, env, path) {
     if (difference) {
       await db.prepare('INSERT INTO login_attempts (ip, count, expires_at) VALUES (?, ?, ?) ON CONFLICT(ip) DO UPDATE SET count = excluded.count, expires_at = excluded.expires_at')
         .bind(ip, prior?.expires_at > now ? prior.count + 1 : 1, now + 900000).run();
+      await securityTable(db);
+      await db.prepare('INSERT INTO security_events (id, kind, actor_hash, created_at) VALUES (?, ?, ?, ?)')
+        .bind(crypto.randomUUID(), 'failed_login', await digest(ip + ':' + env.ADMIN_PASSWORD), now).run();
       return json({ error: 'Incorrect password.' }, 401);
     }
     await db.prepare('DELETE FROM login_attempts WHERE ip = ?').bind(ip).run();
@@ -106,6 +121,20 @@ async function api(request, env, path) {
   }
   const id = await authenticated(db, request);
   if (!id) return json({ error: 'Sign in to manage products.' }, 401);
+  if (request.method === 'GET' && path === '/api/admin/security') {
+    const isLocked = await locked(db);
+    const since = Date.now() - 7 * 86400000;
+    const attempts = await db.prepare('SELECT count(*) AS count FROM security_events WHERE kind = ? AND created_at > ?').bind('failed_login', since).first();
+    return json({ lockdown: isLocked, failedLogins7d: attempts?.count || 0 });
+  }
+  if (request.method === 'POST' && path === '/api/admin/security/lockdown') {
+    const input = await body(request);
+    if (typeof input?.lockdown !== 'boolean') throw new Error('Choose whether lockdown is on or off.');
+    await securityTable(db);
+    await db.prepare('INSERT INTO operations (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind('lockdown', input.lockdown ? 'on' : 'off').run();
+    await db.prepare('INSERT INTO security_events (id, kind, actor_hash, created_at) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID(), input.lockdown ? 'lockdown_on' : 'lockdown_off', null, Date.now()).run();
+    return json({ lockdown: input.lockdown });
+  }
   if (request.method === 'POST' && (path === '/api/admin/aria' || path === '/api/admin/aria/draft')) {
     if (!env.AI && !env.OPENAI_API_KEY) return json({ error: 'Aria is not configured yet.' }, 503);
     const now = Date.now();
@@ -157,7 +186,7 @@ export default {
       if (path.startsWith('/api/')) return await api(request, env, path);
       return env.ASSETS.fetch(request);
     } catch (error) {
-      const invalid = ['Invalid JSON.', 'Request too large.', 'Enter a name and a valid price.', 'Enter a product name first.', 'SKU or supplier is too long.', 'Enter a valid unit cost.', 'Enter a valid shipping cost.', 'Enter a valid stock quantity.', 'Enter a unit cost and target margin from 5% to 70%.', 'Send between 1 and 8 messages.', 'Each message must contain up to 1,000 characters.', 'The last message must be yours.'].includes(error.message);
+      const invalid = ['Invalid JSON.', 'Request too large.', 'Enter a name and a valid price.', 'Enter a product name first.', 'Choose whether lockdown is on or off.', 'SKU or supplier is too long.', 'Enter a valid unit cost.', 'Enter a valid shipping cost.', 'Enter a valid stock quantity.', 'Enter a unit cost and target margin from 5% to 70%.', 'Send between 1 and 8 messages.', 'Each message must contain up to 1,000 characters.', 'The last message must be yours.'].includes(error.message);
       if (!invalid) console.error('Request failed:', error.message);
       return json({ error: invalid ? error.message : 'Server error.' }, invalid ? 400 : 500);
     }

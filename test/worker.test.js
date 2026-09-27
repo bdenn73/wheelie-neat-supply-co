@@ -31,6 +31,8 @@ test('free-tier Worker keeps catalog and owner sessions in D1', async () => {
   const login = await request('/api/admin/login', 'POST', { password: env.ADMIN_PASSWORD });
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await request('/api/admin/login', 'POST', { password: 'incorrect' })).status, 401);
+  assert.equal((await (await request('/api/admin/security', 'GET', null, cookie)).json()).failedLogins7d, 1);
   assert.equal((await request('/api/admin/session', 'GET', null, cookie)).status, 200);
   assert.equal((await request('/api/admin/products', 'POST', { name: 'X', price: '9.99' }, cookie, 'https://attacker.example')).status, 403);
   const draft = await request('/api/admin/aria/draft', 'POST', { name: 'First item', notes: 'Useful item', unitCostCents: 800, shippingCostCents: 200, targetMargin: 30 }, cookie);
@@ -49,6 +51,14 @@ test('free-tier Worker keeps catalog and owner sessions in D1', async () => {
   assert.equal(publicProduct.priceCents, 1250);
   assert.equal('supplier' in publicProduct, false);
   assert.equal('unitCostCents' in publicProduct, false);
+  assert.equal((await request('/api/admin/security/lockdown', 'POST', { lockdown: true })).status, 401);
+  assert.equal((await request('/api/admin/security/lockdown', 'POST', { lockdown: true }, cookie)).status, 200);
+  const closed = await request('/api/products');
+  assert.equal(closed.headers.get('X-Catalog-Lockdown'), 'on');
+  assert.deepEqual(await closed.json(), []);
+  assert.equal((await (await request('/api/admin/security', 'GET', null, cookie)).json()).lockdown, true);
+  await request('/api/admin/security/lockdown', 'POST', { lockdown: false }, cookie);
+  assert.equal((await (await request('/api/products')).json()).length, 1);
   assert.equal(sqlite.prepare('SELECT count(*) AS n FROM products').get().n, 1);
   await request('/api/admin/logout', 'POST', null, cookie);
   assert.equal((await request('/api/admin/products', 'GET', null, cookie)).status, 401);
