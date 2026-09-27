@@ -23,10 +23,10 @@ function render() {
     const row = document.createElement('div'); row.className = 'inventory-row';
     const detail = document.createElement('div');
     const heading = document.createElement('h3'); heading.textContent = item.name;
-    const status = document.createElement('p'); status.textContent = `${(item.priceCents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} · ${item.available ? 'Public' : 'Hidden'}`;
+    const status = document.createElement('p'); status.textContent = `${(item.priceCents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} · ${item.available ? 'Public' : 'Hidden'} · ${item.stockQty === null ? 'Stock not tracked' : `${item.stockQty} on hand`}${item.supplier ? ` · Supplier: ${item.supplier}` : ''}`;
     detail.append(heading, status);
     const actions = document.createElement('div'); actions.className = 'actions';
-    actions.append(action('Edit', () => { editing = item.id; form.elements.namedItem('name').value = item.name; form.elements.namedItem('description').value = item.description; form.elements.namedItem('price').value = (item.priceCents / 100).toFixed(2); form.elements.namedItem('available').checked = item.available; cancel.hidden = false; document.getElementById('form-title').textContent = 'Edit product'; form.scrollIntoView({ behavior: 'smooth' }); }), action('Delete', async () => {
+    actions.append(action('Edit', () => { editing = item.id; form.elements.namedItem('name').value = item.name; form.elements.namedItem('description').value = item.description; form.elements.namedItem('price').value = (item.priceCents / 100).toFixed(2); form.elements.namedItem('available').checked = item.available; for (const key of ['sku', 'supplier']) form.elements.namedItem(key).value = item[key] || ''; for (const [key, cents] of [['unitCost', item.unitCostCents], ['shippingCost', item.shippingCostCents]]) form.elements.namedItem(key).value = cents === null ? '' : (cents / 100).toFixed(2); form.elements.namedItem('stockQty').value = item.stockQty ?? ''; cancel.hidden = false; document.getElementById('form-title').textContent = 'Edit product'; form.scrollIntoView({ behavior: 'smooth' }); }), action('Delete', async () => {
       if (!confirm(`Delete ${item.name}?`)) return;
       try { await api(`/api/admin/products/${item.id}`, { method: 'DELETE' }); await refresh(); reset(); message('Product deleted.'); } catch (error) { message(error.message); }
     }, 'danger'));
@@ -41,10 +41,23 @@ document.getElementById('login-form').addEventListener('submit', async event => 
 });
 form.addEventListener('submit', async event => {
   event.preventDefault();
-  const data = { name: form.elements.namedItem('name').value, description: form.elements.namedItem('description').value, price: form.elements.namedItem('price').value, available: form.elements.namedItem('available').checked };
+  const data = { name: form.elements.namedItem('name').value, description: form.elements.namedItem('description').value, price: form.elements.namedItem('price').value, available: form.elements.namedItem('available').checked, sku: form.elements.namedItem('sku').value, supplier: form.elements.namedItem('supplier').value, unitCost: form.elements.namedItem('unitCost').value, shippingCost: form.elements.namedItem('shippingCost').value, stockQty: form.elements.namedItem('stockQty').value };
   try { await api(editing ? `/api/admin/products/${editing}` : '/api/admin/products', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(data) }); reset(); await refresh(); message('Product saved.'); }
   catch (error) { message(error.message); }
 });
 cancel.addEventListener('click', reset);
+document.getElementById('draft').addEventListener('click', async () => {
+  const field = key => form.elements.namedItem(key).value;
+  const button = document.getElementById('draft');
+  if (!field('name').trim()) { message('Enter a product name first.'); return; }
+  button.disabled = true; message('Aria is drafting. Nothing will be saved or published until you review it.');
+  try {
+    const result = await api('/api/admin/aria/draft', { method: 'POST', body: JSON.stringify({ name: field('name'), sku: field('sku'), notes: field('description'), unitCostCents: field('unitCost') === '' ? null : Math.round(Number(field('unitCost')) * 100), shippingCostCents: field('shippingCost') === '' ? null : Math.round(Number(field('shippingCost')) * 100), targetMargin: Number(field('targetMargin')) }) });
+    form.elements.namedItem('description').value = result.description;
+    if (result.priceCents !== null) form.elements.namedItem('price').value = (result.priceCents / 100).toFixed(2);
+    message(`Draft ready. ${result.pricingNote} Check the description and price, then save when ready.`);
+  } catch (error) { message(error.message); }
+  finally { button.disabled = false; }
+});
 document.getElementById('logout').addEventListener('click', async () => { await api('/api/admin/logout', { method: 'POST' }); showManager(false); reset(); message('Signed out.'); });
 api('/api/admin/session').then(async state => { showManager(state.authenticated); if (!state.configured) message('Owner login needs to be configured before products can be managed.'); if (state.authenticated) await refresh(); }).catch(error => message(error.message));
