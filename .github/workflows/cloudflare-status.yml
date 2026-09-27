@@ -1,0 +1,42 @@
+name: Cloudflare Worker status
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 13 * * *'
+permissions: {}
+jobs:
+  deployment_status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read Wheelie Neat deployment metadata
+        env:
+          CF_STATUS_TOKEN: ${{ secrets.CF_STATUS_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          token = os.environ.get('CF_STATUS_TOKEN', '')
+          account = os.environ.get('CF_ACCOUNT_ID', '')
+          if not token or not account:
+              print('Cloudflare status is waiting for CF_STATUS_TOKEN and CF_ACCOUNT_ID repository secrets.')
+              raise SystemExit(0)
+          if not account.isalnum() or len(account) > 32:
+              raise SystemExit('Invalid Cloudflare account ID.')
+          url = f'https://api.cloudflare.com/client/v4/accounts/{account}/workers/scripts/wheelie-neat-supply-co/deployments'
+          req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+          try:
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  payload = json.load(response)
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f'Cloudflare status request failed with HTTP {error.code}.')
+          if not payload.get('success'):
+              raise SystemExit('Cloudflare did not return deployment status.')
+          deployments = payload.get('result') or []
+          if isinstance(deployments, dict):
+              deployments = deployments.get('deployments') or []
+          print('Worker: wheelie-neat-supply-co')
+          for item in deployments[:3]:
+              print('Deployment:', item.get('id', 'unknown'), 'Created:', item.get('created_on', 'unknown'))
+          if not deployments:
+              print('No deployments returned.')
+          PY
